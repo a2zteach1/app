@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi‑Class Attendance</title>
+<style>
+:root{--primary:#2563eb;--present:#22c55e;--absent:#ef4444;--bg:#f4f6fb}
+body{margin:0;font-family:system-ui;background:var(--bg)}
+header{background:var(--primary);color:#fff;padding:14px;text-align:center;font-size:18px}
+.container{padding:12px}
+.card{background:#fff;border-radius:14px;padding:12px;margin-bottom:14px;box-shadow:0 8px 18px rgba(0,0,0,.08)}
+input,button,select{padding:10px;width:100%;border-radius:10px;border:1px solid #ddd;margin:6px 0}
+button{background:var(--primary);color:#fff;border:none;cursor:pointer}
+table{border-collapse:collapse;min-width:800px;width:100%}
+th,td{border:1px solid #e5e7eb;padding:6px;text-align:center}
+th{background:#f1f5f9}
+.present{background:#dcfce7;color:#166534;font-weight:700}
+.absent{background:#fee2e2;color:#991b1b;font-weight:700}
+.hidden{display:none}
+.grid{overflow-x:auto}
+</style>
+</head>
+<body>
+<header>📘 Multi‑Class Attendance System</header>
+<div class="container">
+
+<div class="card" id="loginCard">
+  <h3>Login</h3>
+  <input id="u" placeholder="Username">
+  <input id="p" type="password" placeholder="Password">
+  <button id="loginBtn">Login</button>
+  <small>Admin: admin / admin</small>
+</div>
+
+<div id="adminPanel" class="hidden">
+  <div class="card">
+    <h3>Add / Delete Class</h3>
+    <input id="classInput" placeholder="Class (eg: 10-A)">
+    <button id="addClassBtn">Add</button>
+    <select id="deleteClass"></select>
+    <button id="deleteClassBtn" style="background:#ef4444">Delete Class</button>
+  </div>
+
+  <div class="card">
+    <h3>Manage Teacher Classes</h3>
+    <input id="tUser" placeholder="Teacher Username">
+    <input id="tPass" placeholder="Password (new teacher)">
+    <select id="tClass" multiple></select>
+    <button id="saveTeacherBtn">Save / Update Teacher</button>
+  </div>
+
+  <div class="card">
+    <h3>Manage Students</h3>
+    <select id="removeClass"></select>
+    <select id="removeStudent"></select>
+    <button id="removeStudentBtn">Remove Student</button>
+    <hr>
+    <input id="studentInput" placeholder="Student Name">
+    <select id="sClass"></select>
+    <button id="addStudentBtn">Add Student</button>
+  </div>
+
+  <div class="card">
+    <h3>Admin Attendance / Report</h3>
+    <select id="reportClass"></select>
+    <input type="month" id="adminMonth">
+    <div class="grid"><table id="reportTable"></table></div>
+  </div>
+</div>
+
+<div id="teacherPanel" class="hidden">
+  <div class="card">
+    <h3>Mark Attendance</h3>
+    <select id="teacherClassSelect"></select>
+    <input type="month" id="month">
+    <div class="grid"><table id="excelTable"></table></div>
+    <button id="saveBtn">Save</button>
+  </div>
+</div>
+</div>
+
+<script>
+/* ================= STORAGE ================= */
+let users = JSON.parse(localStorage.getItem('users') || '{}');
+if (!users.admin) users.admin = { password: 'admin', role: 'admin' };
+let classes = JSON.parse(localStorage.getItem('classes') || '[]');
+let students = JSON.parse(localStorage.getItem('students') || '[]');
+let attendance = JSON.parse(localStorage.getItem('attendance') || '{}');
+let currentUser = null;
+
+/* ================= AUTH ================= */
+function login(){
+  const user = u.value.trim();
+  const pass = p.value.trim();
+  if(users[user] && users[user].password === pass){
+    currentUser = users[user];
+    loginCard.classList.add('hidden');
+    if(currentUser.role === 'admin'){
+      adminPanel.classList.remove('hidden');
+      loadSelectors();
+    } else {
+      teacherPanel.classList.remove('hidden');
+      initTeacher();
+    }
+  } else {
+    alert('Invalid login');
+  }
+}
+
+/* ================= ADMIN ================= */
+function addClass(){
+  if(!classInput.value) return;
+  classes.push(classInput.value);
+  localStorage.setItem('classes', JSON.stringify(classes));
+  classInput.value='';
+  loadSelectors();
+}
+
+function deleteClassFn(){
+  const cls = deleteClass.value;
+  if(!cls) return;
+  if(!confirm('Delete class, students, teachers & attendance?')) return;
+
+  classes = classes.filter(c=>c!==cls);
+  students = students.filter(s=>s.class!==cls);
+
+  Object.keys(attendance).forEach(k=>{ if(k.startsWith(cls+'-')) delete attendance[k]; });
+  Object.values(users).forEach(u=>{ if(u.role==='teacher') u.classes = u.classes.filter(c=>c!==cls); });
+
+  localStorage.setItem('classes', JSON.stringify(classes));
+  localStorage.setItem('students', JSON.stringify(students));
+  localStorage.setItem('attendance', JSON.stringify(attendance));
+  localStorage.setItem('users', JSON.stringify(users));
+  loadSelectors();
+}
+
+function saveTeacherClasses(){
+  const cls=[...tClass.selectedOptions].map(o=>o.value);
+  if(!tUser.value || !cls.length) return alert('Missing data');
+  if(!users[tUser.value]){
+    users[tUser.value]={password:tPass.value,role:'teacher',classes:cls};
+  } else {
+    users[tUser.value].classes = cls;
+  }
+  localStorage.setItem('users', JSON.stringify(users));
+}
+
+function addStudent(){
+  if(!studentInput.value || !sClass.value) return;
+  students.push({name:studentInput.value,class:sClass.value});
+  localStorage.setItem('students', JSON.stringify(students));
+  studentInput.value='';
+  loadRemoveStudents();
+}
+
+function removeStudentFn(){
+  const cls = removeClass.value;
+  const name = removeStudent.value;
+  if(!cls || !name) return alert('Select class and student');
+
+  students = students.filter(s => !(s.name===name && s.class===cls));
+  Object.keys(attendance).forEach(k=>{
+    if(k.startsWith(cls+'-') && k.includes('-'+name+'-')) delete attendance[k];
+  });
+
+  localStorage.setItem('students', JSON.stringify(students));
+  localStorage.setItem('attendance', JSON.stringify(attendance));
+  loadRemoveStudents();
+}
+
+function loadSelectors(){
+  ['sClass','reportClass','tClass','removeClass','deleteClass'].forEach(id=>{
+    const sel=document.getElementById(id);
+    if(!sel) return;
+    sel.innerHTML='';
+    classes.forEach(c=> sel.innerHTML+=`<option value="${c}">${c}</option>`);
+  });
+  loadRemoveStudents();
+}
+
+function loadRemoveStudents(){
+  const cls = removeClass.value;
+  removeStudent.innerHTML='';
+  students.filter(s=>s.class===cls).forEach(s=>{
+    removeStudent.innerHTML+=`<option value="${s.name}">${s.name}</option>`;
+  });
+}
+
+/* ================= REPORT ================= */
+function renderAdminReport(){
+  if(!reportClass.value || !adminMonth.value) return;
+  const [y,mo]=adminMonth.value.split('-');
+  const days=new Date(y,mo,0).getDate();
+  let h='<tr><th>Student</th>';
+  for(let d=1;d<=days;d++) h+=`<th>${d}</th>`;
+  h+='</tr>';
+
+  students.filter(s=>s.class===reportClass.value).forEach(s=>{
+    h+=`<tr><td>${s.name}</td>`;
+    for(let d=1;d<=days;d++){
+      const k=`${reportClass.value}-${adminMonth.value}-${s.name}-${d}`;
+      h+=`<td>${attendance[k]||''}</td>`;
+    }
+    h+='</tr>';
+  });
+  reportTable.innerHTML=h;
+}
+
+/* ================= TEACHER ================= */
+function isMonthLocked(m){
+  const [y,mo]=m.split('-');
+  return new Date() > new Date(y,mo,0);
+}
+
+function initTeacher(){
+  teacherClassSelect.innerHTML='';
+  currentUser.classes.forEach(c=> teacherClassSelect.innerHTML+=`<option>${c}</option>`);
+  const n=new Date();
+  month.value=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`;
+  renderTeacher();
+}
+
+function renderTeacher(){
+  if(!teacherClassSelect.value || !month.value) return;
+  const [y,mo]=month.value.split('-');
+  const days=new Date(y,mo,0).getDate();
+  let h='<tr><th>Student</th>';
+  for(let d=1;d<=days;d++) h+=`<th>${d}</th>`;
+  h+='</tr>';
+
+  students.filter(s=>s.class===teacherClassSelect.value).forEach(s=>{
+    h+=`<tr><td>${s.name}</td>`;
+    for(let d=1;d<=days;d++){
+      const k=`${teacherClassSelect.value}-${month.value}-${s.name}-${d}`;
+      const v=attendance[k]||'';
+      h+=`<td class="${v==='P'?'present':v==='A'?'absent':''}" onclick="toggle(this,'${k}')">${v}</td>`;
+    }
+    h+='</tr>';
+  });
+  excelTable.innerHTML=h;
+}
+
+function toggle(td,k){
+  const m=k.split('-')[1];
+  if(isMonthLocked(m)) return;
+  const v = td.textContent===''?'P':td.textContent==='P'?'A':'';
+  td.textContent=v;
+  td.className=v==='P'?'present':v==='A'?'absent':'';
+  if(v==='') delete attendance[k]; else attendance[k]=v;
+}
+
+function save(){
+  localStorage.setItem('attendance', JSON.stringify(attendance));
+  alert('Saved');
+}
+
+/* ================= EVENTS ================= */
+loginBtn.onclick=login;
+addClassBtn.onclick=addClass;
+deleteClassBtn.onclick=deleteClassFn;
+saveTeacherBtn.onclick=saveTeacherClasses;
+addStudentBtn.onclick=addStudent;
+removeStudentBtn.onclick=removeStudentFn;
+reportClass.onchange=renderAdminReport;
+adminMonth.onchange=renderAdminReport;
+teacherClassSelect.onchange=renderTeacher;
+month.onchange=renderTeacher;
+saveBtn.onclick=save;
+removeClass.onchange=loadRemoveStudents;
+</script>
+</body>
+</html>
